@@ -1,0 +1,30 @@
+{
+    "name": "rubix/dna",
+    "type": "project",
+    "description": "Identify microbe taxonomies from their DNA sequences using machine learning.",
+    "homepage": "https://github.com/RubixML/DNA",
+    "license": "MIT",
+    "readme": "README.md",
+    "keywords": [
+        "metagenomics", "bioinformatics", "machine learning", "dna identification", "taxonomer"
+    ],
+    "authors": [
+        {
+            "name": "Andrew DalPino",
+            "role": "Lead Engineer",
+            "email": "support@andrewdalpino.com"
+        }
+    ],
+    "require": {
+        "php": ">=7.4",
+        "rubix/extras": "^1.0",
+        "rubix/ml": "^1.0",
+        "scienide/helix": "dev-master"
+    },
+    "config": {
+        "preferred-install": "dist",
+        "sort-packages": true
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
