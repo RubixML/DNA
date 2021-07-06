@@ -20,10 +20,6 @@ ini_set('memory_limit', '-1');
 
 $logger = new Screen();
 
-$logger->info('Loading data into memory');
-
-$dataset = Labeled::fromIterator(new CSV('train.csv', true));
-
 $estimator = new PersistentModel(
     new Pipeline([
         new NumericStringConverter(),
@@ -43,15 +39,21 @@ $estimator = new PersistentModel(
 
 $estimator->setLogger($logger);
 
-$logger->info('Training');
+foreach (glob("datasets/train_*.csv") as $i => $file) {
+    $logger->info("Loading $file into memory");
 
-$estimator->train($dataset);
+    $dataset = Labeled::fromIterator(new CSV($file));
 
-$extractor = new CSV('progress.csv', true);
+    $logger->info('Partial training');
 
-$extractor->export($estimator->steps());
+    $estimator->partial($dataset);
 
-$logger->info('Progress saved to progress.csv');
+    $extractor = new CSV("progress_{$i}.csv", true);
+
+    $extractor->export($estimator->steps());
+
+    $logger->info("Progress saved to progress_{$i}.csv");
+}
 
 if (strtolower(readline('Save this model? (y|[n]): ')) === 'y') {
     $estimator->save();

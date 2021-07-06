@@ -17,7 +17,7 @@ $logger = new Screen();
 
 $logger->info('Loading data into memory');
 
-$dataset = Labeled::fromIterator(new CSV('test.csv', true));
+$dataset = Labeled::fromIterator(new CSV('datasets/test.csv', true));
 
 $estimator = PersistentModel::load(new Filesystem('model.rbx'));
 

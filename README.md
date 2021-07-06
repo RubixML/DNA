@@ -8,8 +8,8 @@ An example project demonstrating the use of machine learning to identify microbe
 - [PHP](https://php.net) 7.4 or above
 
 #### Recommended
-- [Tensor extension](https://github.com/RubixML/Tensor) for faster training and inference
-- 8G of system memory
+- [Tensor extension](https://github.com/Scien-ide/Tensor) for faster training and inference
+- 4G of system memory
 
 ## Tutorial
 

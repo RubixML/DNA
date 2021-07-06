@@ -5,7 +5,7 @@ composer.lock
 Thumbs.db
 .DS_Store
 debug.log
-progress.csv
+progress_*.csv
 report.json
 model.rbx
 /.idea

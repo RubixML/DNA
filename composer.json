@@ -17,8 +17,7 @@
     ],
     "require": {
         "php": ">=7.4",
-        "rubix/extras": "^1.0",
-        "rubix/ml": "^1.0",
+        "rubix/ml": "^1.1",
         "scienide/helix": "dev-master"
     },
     "config": {
