@@ -21,6 +21,8 @@ $dataset = Labeled::fromIterator(new CSV('datasets/test.csv', true));
 
 $estimator = PersistentModel::load(new Filesystem('model.rbx'));
 
+$estimator->cleanup();
+
 $predictions = $estimator->predict($dataset);
 
 $report = new AggregateReport([
