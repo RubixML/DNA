@@ -6,13 +6,249 @@ An example project demonstrating the use of machine learning to identify microbe
 
 - [PHP](https://php.net) 8.3 or above
 
-#### Recommended
+### Recommended
 
-- [Tensor extension](https://github.com/Scien-ide/Tensor) for faster training and inference
+- [Tensor extension](https://github.com/RubixML/Tensor) for faster training and inference
+
+## Installation
+
+Clone the project locally using [Composer](https://getcomposer.org) or install it as a package:
+
+```sh
+composer create-project rubix/dna
+```
+
+> **Note:** Installation may take longer than usual because of the large dataset.
 
 ## Tutorial
 
-On the map ...
+### Introduction
+
+Our objective is to predict the biological taxonomy of a DNA sequence using machine learning. More precisely, given a short piece of DNA we want to classify it into one of five broad groups: `virus`, `bacteria`, `animal`, `fungi`, or `plant`. This is a common task in [metagenomics](https://en.wikipedia.org/wiki/Metagenomics) where we need to identify which organisms are present in an environmental sample.
+
+We'll represent each DNA sequence as a [k-mer count](https://en.wikipedia.org/wiki/Crossmatch#K-mer) feature vector. A k-mer is a substring of length k drawn from the sequence, and counting how often each of them appears produces a fixed-length feature vector independent of how long the sequence we started with happened to be. We'll use k equal to 4, which gives us 4^4 = 256 possible k-mer features. The full list of features in the order we will use them can be found in the `features.json` file.
+
+> For the DNA sequence `GCAATG` the 4-mers we find are `GCAT`, `CAAT`, and `AATG`. If another sample happened to contain `GCAT` twice, `CAAT` once, and `AATG` once we would set the count of those features to 2, 1, and 1 - and the remaining 253 features in the vector to 0.
+
+The dataset provided to us contains 4 training files (`datasets/train_1.csv` - `datasets/train_4.csv`) and one test file (`datasets/test.csv`). Each file contains roughly 35,000 samples, and combined we have close to 150,000 samples in total. We'll use the four training files to train the model and the test file to validate the model's performance. From there, we'll use the dataset to train a multilayer neural network - the [Multilayer Perceptron](https://rubixml.github.io/ML/latest/classifiers/multilayer-perceptron.html) - to classify the taxonomy of any DNA sequence we show it.
+
+### Extracting the Data
+
+Our samples are given to us as [CSV](https://en.wikipedia.org/wiki/Comma-separated_values) files. Each row contains a single sample - the 256 k-mer counts as the first 256 columns and the label in the last column. The four training files are combined into a single stream with the [Concatenator](https://rubixml.github.io/ML/latest/extractors/concatenator.html) extractor and each file is loaded individually with the [CSV](https://rubixml.github.io/ML/latest/extractors/csv.html) extractor.
+
+```php
+use Rubix\ML\Extractors\CSV;
+use Rubix\ML\Extractors\Concatenator;
+use Rubix\ML\Datasets\Labeled;
+
+$extractor = new Concatenator([
+    new CSV('datasets/train_1.csv'),
+    new CSV('datasets/train_2.csv'),
+    new CSV('datasets/train_3.csv'),
+    new CSV('datasets/train_4.csv'),
+]);
+```
+
+> **Note**: The source code for this example can be found in the [train.php](https://github.com/RubixML/DNA/blob/master/train.php) file in the project root.
+
+Unlike the [Sentiment](https://github.com/RubixML/Sentiment) example, where we loaded the entire dataset into memory, we are going to iterate over the data in chunks. This is because the dataset is large and may not fit into memory on all machines. We use the static `Labeled::chunked()` method to load the data in blocks of 32,768 samples. When the final block is not full the `Labeled` iterator will yield a partial block - the size of an iteration of a chunked extractor is not guaranteed to be constant.
+
+> **Note**: The data is loaded lazily. No samples are read until we actually iterate over the extractor.
+
+### Dataset Preparation
+
+Neural nets compute a non-linear continuous function and therefore require continuous features as inputs. However, CSV data is imported as categorical (string) data by default. We'll convert the k-mer counts to continuous values using the [Float Type Converter](https://rubixml.github.io/ML/latest/transformers/float-type-converter.html) transformer.
+
+After conversion we normalize the features to a range between 0 and 1 - which reduces the variance of the input features to a single order of magnitude. We do so using the [Z Scale Standardizer](https://rubixml.github.io/ML/latest/transformers/z-scale-standardizer.html) to center and scale the feature matrix to have 0 mean and unit variance. This last step will help the neural network converge quicker.
+
+```php
+use Rubix\ML\Pipeline;
+use Rubix\ML\Transformers\FloatTypeConverter;
+use Rubix\ML\Transformers\ZScaleStandardizer;
+
+$pipeline = new Pipeline([
+    new FloatTypeConverter(),
+    new ZScaleStandardizer(),
+]);
+```
+
+This is a much simpler preparation pipeline than the text example because our features are already numeric. All that's left is to ensure they are of the right data type, and centered and scaled.
+
+### Instantiating the Learner
+
+Now we'll define the architecture of the neural network and instantiate the [Multilayer Perceptron](https://rubixml.github.io/ML/latest/classifiers/multilayer-perceptron.html) classifier. The network uses 5 hidden blocks. Each block consists of a [Dense](https://rubixml.github.io/ML/latest/neural-network/hidden-layers/dense.html) layer of neurons followed by a non-linear [Activation](https://rubixml.github.io/ML/latest/neural-network/hidden-layers/activation.html) layer that applies the [SiLU](https://rubixml.github.io/ML/latest/neural-network/activation-functions/silu.html) (swish) activation function. Some blocks also include a [Batch Norm](https://rubixml.github.io/ML/latest/neural-network/hidden-layers/batch-norm.html) layer to normalize the activations of the neurons before they are passed to the activation function.
+
+The activation function is what gives the network the ability to learn non-linear relationships between the input and output features. We've found that using a mixture of `Dense` and `BatchNorm` layers with SiLU activations works fairly well for this class of problem. The number and size of each layer is a hyper-parameter you can tune.
+
+```php
+use Rubix\ML\Classifiers\MultilayerPerceptron;
+use Rubix\ML\NeuralNet\Layers\Dense;
+use Rubix\ML\NeuralNet\Layers\Activation;
+use Rubix\ML\NeuralNet\Layers\BatchNorm;
+use Rubix\ML\NeuralNet\ActivationFunctions\SiLU;
+
+$mlp = new MultilayerPerceptron(
+    hiddenLayers: [
+        new Dense(256),
+        new Activation(new SiLU()),
+        new Dense(256),
+        new Activation(new SiLU()),
+        new BatchNorm(),
+        new Dense(256, bias: false),
+        new Activation(new SiLU()),
+        new Dense(128),
+        new Activation(new SiLU()),
+        new BatchNorm(),
+        new Dense(128, bias: false),
+        new Activation(new SiLU()),
+        new Dense(5)
+    ]
+);
+```
+
+The output layer has the same number of neurons as there are classes in the dataset - 5 in this case.
+
+We'll choose a *batch size* of 32 samples per gradient update. We also set `gradientAccumulationSteps` to 4 which accumulates gradients over 4 batches before performing an update - effectively increasing the batch size by a factor of 4 while keeping memory usage the same.
+
+```php
+use Rubix\ML\NeuralNet\Optimizers\Adam;
+use Rubix\ML\NeuralNet\Optimizers\Schedulers\Constant;
+
+$mlp = new MultilayerPerceptron(
+    hiddenLayers: [...],
+    batchSize: 32,
+    gradientAccumulationSteps: 4,
+    optimizer: new Adam(new Constant(1e-4)),
+    epochs: 100,
+    minChange: 1e-5,
+    evalInterval: 2,
+    window: 5
+);
+```
+
+We use the [Adam](https://rubixml.github.io/ML/latest/neural-network/optimizers/adam.html) optimizer with a *learning rate* of 0.0001. When setting the learning rate of an optimizer the important thing to note is that a rate that is too low will cause the network to learn slowly while a rate that is too high will prevent the network from learning at all.
+
+We'll wrap the pipeline and model in a [Pipeline](https://rubixml.github.io/ML/latest/pipeline.html) so that the transformers are applied to the data before it is fed into the model. Then, we'll wrap the entire estimator in a [Persistent Model](https://rubixml.github.io/ML/latest/persistent-model.html) wrapper so we can save and load it later in our other scripts. The [Filesystem](https://rubixml.github.io/ML/latest/persisters/filesystem.html) persister tells the wrapper to save and load the serialized model data from `model.rbx` on disk.
+
+```php
+use Rubix\ML\PersistentModel;
+use Rubix\ML\Persisters\Filesystem;
+
+$estimator = new PersistentModel(
+    new Pipeline([...], $mlp),
+    new Filesystem('model.rbx')
+);
+```
+
+Last, we'll attach a [Screen](https://rubixml.github.io/ML/latest/loggers/screen.html) logger so that we can see training progress in the console.
+
+```php
+use Rubix\ML\Loggers\Screen;
+
+$estimator->setLogger(new Screen());
+```
+
+### Training
+
+Now you can call the `partial()` method on the learner with a dataset as an argument to kick off the training process. `partial()` allows the learner to incrementally learn from new data. This is useful when we can't fit the whole dataset into memory because we can feed it in blocks - each block is used to update the model's parameters before moving on to the next.
+
+```php
+foreach (Labeled::chunked($extractor, size: 32768) as $dataset) {
+    $estimator->partial($dataset);
+}
+```
+
+During training, the learner will record the validation score and the training loss at each iteration or *epoch*. The validation score is calculated using the default [F Beta](https://rubixml.github.io/ML/latest/cross-validation/metrics/f-beta.html) metric on a held-out portion of the training set called the *validation* set. Contrariwise, the training loss is the value of the cost function (in this case the [Cross Entropy](https://rubixml.github.io/ML/latest/neural-network/cost-functions/cross-entropy.html) loss) calculated over the samples left in the training set. We can visualize the training progress by plotting these metrics. To output the scores and losses you can call the additional `steps()` method and pass the resulting iterator to a Writable extractor such as [CSV](https://rubixml.github.io/ML/latest/extractors/csv.html).
+
+```php
+use Rubix\ML\Extractors\CSV;
+
+$extractor = new CSV('progress.csv', true);
+
+$extractor->export($estimator->steps());
+```
+
+> **Note:** When training a network incrementally with `partial()` - rather than `train()` - the validation set is carved out of each incoming chunk with a stratified split rather than from the full dataset. The hyper-parameters controlling this are `evalInterval` (how often to evaluate) and `window` (how many epochs without improvement before early-stopping).
+
+The validation score should be getting better with each epoch as the loss decreases. You can generate your own plots by importing the `progress.csv` file into your plotting application.
+
+Finally, we save the model so we can load it later in our validation script.
+
+```php
+if (strtolower(readline('Save this model? (y|[n]): ')) === 'y') {
+    $estimator->save();
+}
+```
+
+Now you're ready to run the training script from the command line.
+
+```sh
+php train.php
+```
+
+### Cross Validation
+
+To test the generalization performance of the trained network we'll use the testing samples provided to us to generate predictions and then analyze them compared to their ground-truth labels using a cross-validation report. Note that we do not use any training data for cross validation because we want to test the model on samples it has never seen before.
+
+> **Note**: The source code for this example can be found in the [validate.php](https://github.com/RubixML/DNA/blob/master/validate.php) file in the project root.
+
+We'll start by importing the testing samples from `datasets/test.csv`. The samples and labels are loaded into a [Labeled](https://rubixml.github.io/ML/latest/datasets/labeled.html) dataset object using the static `fromIterator()` method.
+
+```php
+use Rubix\ML\Datasets\Labeled;
+use Rubix\ML\Extractors\CSV;
+
+$dataset = Labeled::fromIterator(new CSV('datasets/test.csv'));
+```
+
+Next, we'll use the Persistent Model wrapper to load the network we trained earlier. Calling `cleanup()` releases any resources held by the pipeline's transformers (such as cached statistics) now that the model has been loaded - it is purely an optimization and can be safely omitted.
+
+```php
+use Rubix\ML\PersistentModel;
+use Rubix\ML\Persisters\Filesystem;
+
+$estimator = PersistentModel::load(new Filesystem('model.rbx'));
+$estimator->cleanup();
+```
+
+Now we can use the estimator to make predictions on the testing set. The `predict()` method on the estimator takes a dataset as input and returns an array of predictions.
+
+```php
+$predictions = $estimator->predict($dataset);
+```
+
+The cross-validation report we'll generate is actually a combination of two reports - [Multiclass Breakdown](https://rubixml.github.io/ML/cross-validation/reports/multiclass-breakdown.html) and [Confusion Matrix](https://rubixml.github.io/ML/cross-validation/reports/confusion-matrix.html). We wrap each report in an [Aggregate Report](https://rubixml.github.io/ML/cross-validation/reports/aggregate-report.html) to generate both reports at once. The Multiclass Breakdown will give us detailed information about the performance of the estimator at the class level. The Confusion Matrix will give us an idea as to what labels the estimator is confusing one another for by binning the labels in a 5 x 5 matrix.
+
+```php
+use Rubix\ML\CrossValidation\Reports\AggregateReport;
+use Rubix\ML\CrossValidation\Reports\ConfusionMatrix;
+use Rubix\ML\CrossValidation\Reports\MulticlassBreakdown;
+
+$report = new AggregateReport([
+    new MulticlassBreakdown(),
+    new ConfusionMatrix(),
+]);
+```
+
+To generate the report, pass in the predictions along with the labels from the testing set to the `generate()` method on the report. The return value is a report object that can be echoed out to the console or saved to a file in JSON form.
+
+```php
+$results = $report->generate($predictions, $dataset->labels());
+
+$results->toJSON()->saveTo(new Filesystem('report.json'));
+```
+
+Now we can execute the validation script from the command line.
+
+```sh
+php validate.php
+```
+
+Take a look at the report and see how well the model performs. A well-trained model should have an accuracy well above the 20% that we would achieve by guessing randomly (since there are 5 classes). If your model's accuracy is near or below 20% then the model is probably overfit or was not trained for enough epochs.
+
+### Next Steps
+
+Congratulations on completing the tutorial on DNA taxonomy classification in Rubix ML using a Multilayer Perceptron. We recommend playing around with the network architecture and hyper-parameters on your own to get a feel for how they affect the model. Generally, adding more neurons and layers will improve performance but training may take longer as a result. You could also experiment with different [activation functions](https://rubixml.github.io/ML/latest/neural-network/activation-functions.html), [optimizers](https://rubixml.github.io/ML/latest/neural-network/optimizers.html), or feature engineering approaches (for example a larger k-mer size) and see which combination works best for this problem.
 
 ## References
 

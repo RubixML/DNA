@@ -19,6 +19,8 @@ use Rubix\ML\NeuralNet\Optimizers\Adam;
 use Rubix\ML\NeuralNet\Optimizers\Schedulers\Constant;
 use Rubix\ML\Persisters\Filesystem;
 
+use function Rubix\ML\enumerate;
+
 ini_set('memory_limit', '-1');
 
 $logger = new Screen();
@@ -45,26 +47,30 @@ $estimator = new PersistentModel(
             new Activation(new SiLU()),
             new Dense(128),
             new Activation(new SiLU()),
-            new Dense(64),
+            new BatchNorm(),
+            new Dense(128, bias: false),
             new Activation(new SiLU()),
             new Dense(5)
         ],
         batchSize: 32,
         gradientAccumulationSteps: 4,
-        optimizer: new Adam(new Constant(0.001)),
+        optimizer: new Adam(new Constant(1e-4)),
         epochs: 100,
         minChange: 1e-5,
-        evalInterval: 3,
-        window: 5,
-        holdOut: 0.1
+        evalInterval: 2,
+        window: 5
     )),
     new Filesystem('model.rbx')
 );
 
 $estimator->setLogger($logger);
 
-foreach (Labeled::chunked($extractor, size: 32768) as $dataset) {
+foreach (enumerate(Labeled::chunked($extractor, size: 32768), start: 1) as $i => $dataset) {
+    $logger->info("Training chunk #{$i}");
+
     $estimator->partial($dataset);
+
+    $estimator->network()->freezeFirstKLayers($i);
 }
 
 if (strtolower(readline('Save this model? (y|[n]): ')) === 'y') {
