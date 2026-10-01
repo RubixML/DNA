@@ -15,13 +15,15 @@ use Rubix\ML\NeuralNet\Layers\Dense;
 use Rubix\ML\NeuralNet\Layers\Activation;
 use Rubix\ML\NeuralNet\Layers\BatchNorm;
 use Rubix\ML\NeuralNet\ActivationFunctions\SiLU;
-use Rubix\ML\NeuralNet\Optimizers\Adam;
+use Rubix\ML\NeuralNet\Optimizers\AdaMax;
 use Rubix\ML\NeuralNet\Optimizers\Schedulers\Constant;
 use Rubix\ML\Persisters\Filesystem;
 
 use function Rubix\ML\enumerate;
 
 ini_set('memory_limit', '-1');
+
+define('CHUNK_SIZE', 61440);
 
 $logger = new Screen();
 
@@ -40,37 +42,44 @@ $estimator = new PersistentModel(
         hiddenLayers: [
             new Dense(256),
             new Activation(new SiLU()),
+            new Dense(256, bias: false),
+            new BatchNorm(),
+            new Activation(new SiLU()),
             new Dense(256),
             new Activation(new SiLU()),
-            new BatchNorm(),
             new Dense(256, bias: false),
-            new Activation(new SiLU()),
-            new Dense(128),
-            new Activation(new SiLU()),
             new BatchNorm(),
-            new Dense(128, bias: false),
+            new Activation(new SiLU()),
+            new Dense(256),
+            new Activation(new SiLU()),
+            new Dense(256, bias: false),
+            new BatchNorm(),
             new Activation(new SiLU()),
             new Dense(5)
         ],
         batchSize: 32,
         gradientAccumulationSteps: 4,
-        optimizer: new Adam(new Constant(1e-4)),
+        optimizer: new AdaMax(new Constant(0.0001)),
         epochs: 100,
         minChange: 1e-5,
-        evalInterval: 2,
-        window: 5
+        evalInterval: 1,
+        window: 10
     )),
     new Filesystem('model.rbx')
 );
 
 $estimator->setLogger($logger);
 
-foreach (enumerate(Labeled::chunked($extractor, size: 32768), start: 1) as $i => $dataset) {
+foreach (enumerate(Labeled::chunked($extractor, size: CHUNK_SIZE), start: 1) as $i => $dataset) {
     $logger->info("Training chunk #{$i}");
 
     $estimator->partial($dataset);
 
-    $estimator->network()->freezeFirstKLayers($i);
+    $extractor = new CSV("progress_{$i}.csv", true);
+
+    $extractor->export($estimator->progress(), overwrite: true);
+
+    $logger->info("Progress saved to progress_{$i}.csv");
 }
 
 if (strtolower(readline('Save this model? (y|[n]): ')) === 'y') {
