@@ -6,6 +6,7 @@ use Rubix\ML\Loggers\Screen;
 use Rubix\ML\Datasets\Labeled;
 use Rubix\ML\Extractors\CSV;
 use Rubix\ML\PersistentModel;
+use Rubix\ML\Transformers\PersistentTransformer;
 use Rubix\ML\Persisters\Filesystem;
 use Rubix\ML\CrossValidation\Reports\AggregateReport;
 use Rubix\ML\CrossValidation\Reports\ConfusionMatrix;
@@ -19,9 +20,13 @@ $logger->info('Loading data into memory');
 
 $dataset = Labeled::fromIterator(new CSV('datasets/test.csv', true));
 
+$transformer = PersistentTransformer::load(new Filesystem('transformer.rbx'));
+
 $estimator = PersistentModel::load(new Filesystem('model.rbx'));
 
 $estimator->cleanup();
+
+$dataset->apply($transformer);
 
 $predictions = $estimator->predict($dataset);
 
@@ -31,6 +36,8 @@ $report = new AggregateReport([
 ]);
 
 $results = $report->generate($predictions, $dataset->labels());
+
+echo $results;
 
 $results->toJSON()->saveTo(new Filesystem('report.json'));
 

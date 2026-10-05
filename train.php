@@ -5,7 +5,8 @@ include __DIR__ . '/vendor/autoload.php';
 use Rubix\ML\Loggers\Screen;
 use Rubix\ML\Datasets\Labeled;
 use Rubix\ML\PersistentModel;
-use Rubix\ML\Pipeline;
+use Rubix\ML\Transformers\PersistentTransformer;
+use Rubix\ML\Transformers\Pipeline;
 use Rubix\ML\Extractors\CSV;
 use Rubix\ML\Extractors\Concatenator;
 use Rubix\ML\Transformers\FloatTypeConverter;
@@ -34,11 +35,18 @@ $extractor = new Concatenator([
     new CSV('datasets/train_4.csv'),
 ]);
 
-$estimator = new PersistentModel(
-    new Pipeline([
+$testing = Labeled::fromIterator(new CSV('datasets/test.csv'));
+
+$transformer = new PersistentTransformer(
+    base: new Pipeline([
         new FloatTypeConverter(),
         new ZScaleStandardizer(),
-    ], new MultilayerPerceptron(
+    ]),
+    persister: new Filesystem('transformer.rbx')
+);
+
+$estimator = new PersistentModel(
+   base: new MultilayerPerceptron(
         hiddenLayers: [
             new Dense(256),
             new Activation(new SiLU()),
@@ -64,14 +72,22 @@ $estimator = new PersistentModel(
         minChange: 1e-5,
         evalInterval: 1,
         window: 10
-    )),
-    new Filesystem('model.rbx')
+    ),
+    persister: new Filesystem('model.rbx')
 );
 
 $estimator->setLogger($logger);
 
+$testing->apply($transformer);
+
+$estimator->setValidationDataset($testing);
+
 foreach (enumerate(Labeled::chunked($extractor, size: CHUNK_SIZE), start: 1) as $i => $dataset) {
     $logger->info("Training chunk #{$i}");
+
+    $transformer->update($dataset);
+
+    $dataset->apply($transformer);
 
     $estimator->partial($dataset);
 
@@ -83,6 +99,7 @@ foreach (enumerate(Labeled::chunked($extractor, size: CHUNK_SIZE), start: 1) as 
 }
 
 if (strtolower(readline('Save this model? (y|[n]): ')) === 'y') {
+    $transformer->save();
     $estimator->save();
 
     $logger->info('Model saved to model.rbx');
