@@ -67,17 +67,24 @@ Neural nets compute a non-linear continuous function and therefore require conti
 After conversion we normalize the features to a range between 0 and 1 - which reduces the variance of the input features to a single order of magnitude. We do so using the [Z Scale Standardizer](https://rubixml.github.io/ML/latest/transformers/z-scale-standardizer.html) to center and scale the feature matrix to have 0 mean and unit variance. This last step will help the neural network converge quicker.
 
 ```php
-use Rubix\ML\Pipeline;
+use Rubix\ML\Persisters\Filesystem;
+use Rubix\ML\Transformers\PersistentTransformer;
+use Rubix\ML\Transformers\Pipeline;
 use Rubix\ML\Transformers\FloatTypeConverter;
 use Rubix\ML\Transformers\ZScaleStandardizer;
 
-$pipeline = new Pipeline([
-    new FloatTypeConverter(),
-    new ZScaleStandardizer(),
-]);
+$transformer = new PersistentTransformer(
+    base: new Pipeline([
+        new FloatTypeConverter(),
+        new ZScaleStandardizer(),
+    ]),
+    persister: new Filesystem('transformer.rbx')
+);
 ```
 
 This is a much simpler preparation pipeline than the text example because our features are already numeric. All that's left is to ensure they are of the right data type, and centered and scaled.
+
+Note that the pipeline is wrapped in a [Persistent Transformer](https://rubixml.github.io/ML/latest/transformers/persistent-transformer.html) rather than being part of the model. This lets us save the transformer to `transformer.rbx` and reload it in the validation script so that the test set is transformed with the exact same pipeline used during training.
 
 ### Instantiating the Learner
 
@@ -136,29 +143,48 @@ $mlp = new MultilayerPerceptron(
 
 We use the [AdaMax](https://rubixml.github.io/ML/latest/neural-network/optimizers/adamax.html) optimizer with a *learning rate* of 0.0001. When setting the learning rate of an optimizer the important thing to note is that a rate that is too low will cause the network to learn slowly while a rate that is too high will prevent the network from learning at all.
 
-We'll wrap the pipeline and model in a [Pipeline](https://rubixml.github.io/ML/latest/pipeline.html) so that the transformers are applied to the data before it is fed into the model. Then, we'll wrap the entire estimator in a [Persistent Model](https://rubixml.github.io/ML/latest/persistent-model.html) wrapper so we can save and load it later in our other scripts. The [Filesystem](https://rubixml.github.io/ML/latest/persisters/filesystem.html) persister tells the wrapper to save and load the serialized model data from `model.rbx` on disk.
+We'll wrap the model in a [Persistent Model](https://rubixml.github.io/ML/latest/persistent-model.html) wrapper so we can save and load it later in our other scripts. The [Filesystem](https://rubixml.github.io/ML/latest/persisters/filesystem.html) persister tells the wrapper to save and load the serialized model data from `model.rbx` on disk.
 
 ```php
 use Rubix\ML\PersistentModel;
 use Rubix\ML\Persisters\Filesystem;
 
 $estimator = new PersistentModel(
-    new Pipeline([...], $mlp),
-    new Filesystem('model.rbx')
+    base: $mlp,
+    persister: new Filesystem('model.rbx')
 );
 ```
 
-Last, we'll attach a [Screen](https://rubixml.github.io/ML/latest/loggers/screen.html) logger so that we can see training progress in the console.
+Note that the transformer is *not* included in the estimator - it is applied to the data ahead of time (as you'll see in the next section) and persisted to its own file so that we can reuse the exact same pipeline at inference time.
+
+Last, we'll create a [Screen](https://rubixml.github.io/ML/latest/loggers/screen.html) logger and attach it to the estimator so that we can see training progress in the console. We reuse the same logger instance for the other status messages logged throughout the script.
 
 ```php
 use Rubix\ML\Loggers\Screen;
 
-$estimator->setLogger(new Screen());
+$logger = new Screen();
+
+$estimator->setLogger($logger);
 ```
 
 ### Training
 
+Before training begins, we load the testing set and set it as the model's *validation* dataset using the `setValidationDataset()` method. This fixes the validation set for the whole run so that the early-stopping metric is computed on the same, held-out samples at every epoch, rather than on a slice of each incoming chunk. We also apply the transformer to it so that the model's internals - which expect continuous, normalized inputs - see the correct representation.
+
+```php
+use Rubix\ML\Datasets\Labeled;
+use Rubix\ML\Extractors\CSV;
+
+$testing = Labeled::fromIterator(new CSV('datasets/test.csv'));
+
+$testing->apply($transformer);
+
+$estimator->setValidationDataset($testing);
+```
+
 Now you can call the `partial()` method on the learner with a dataset as an argument to kick off the training process. `partial()` allows the learner to incrementally learn from new data. This is useful when we can't fit the whole dataset into memory because we can feed it in blocks - each block is used to update the model's parameters before moving on to the next. We wrap the chunked extractor with `enumerate()` to keep track of which block we're on.
+
+Because the transformer is updated as it sees new data (the online-style `Z Scale Standardizer` accumulates running statistics), we refresh it with each chunk via `$transformer->update($dataset)` and then transform the chunk before it is fed to the model with `$dataset->apply($transformer)`:
 
 ```php
 use Rubix\ML\Datasets\Labeled;
@@ -166,11 +192,13 @@ use Rubix\ML\Datasets\Labeled;
 use function Rubix\ML\enumerate;
 
 foreach (enumerate(Labeled::chunked($extractor, size: CHUNK_SIZE), start: 1) as $i => $dataset) {
+    $transformer->update($dataset);
+    $dataset->apply($transformer);
     $estimator->partial($dataset);
 }
 ```
 
-During training, the learner will record the validation score and the training loss at each iteration or *epoch*. The validation score is calculated using the default [F Beta](https://rubixml.github.io/ML/latest/cross-validation/metrics/f-beta.html) metric on a held-out portion of the training set called the *validation* set. Contrariwise, the training loss is the value of the cost function (in this case the [Cross Entropy](https://rubixml.github.io/ML/latest/neural-network/cost-functions/cross-entropy.html) loss) calculated over the samples left in the training set. We can visualize the training progress by plotting these metrics. To output the scores and losses you can call the additional `progress()` method and pass the resulting iterator to a Writable extractor such as [CSV](https://rubixml.github.io/ML/latest/extractors/csv.html).
+During training, the learner will record the validation score and the training loss at each iteration or *epoch*. The validation score is calculated using the default [F Beta](https://rubixml.github.io/ML/latest/cross-validation/metrics/f-beta.html) metric on the fixed *validation* set we set above. Contrariwise, the training loss is the value of the cost function (in this case the [Cross Entropy](https://rubixml.github.io/ML/latest/neural-network/cost-functions/cross-entropy.html) loss) calculated over the incoming block of samples. We can visualize the training progress by plotting these metrics. To output the scores and losses you can call the additional `progress()` method and pass the resulting iterator to a Writable extractor such as [CSV](https://rubixml.github.io/ML/latest/extractors/csv.html).
 
 Since `partial()` resets the progress table at the start of every block, we export it to its own file after each one - named after the block number so that nothing is clobbered. The second argument to the CSV extractor constructor marks the file as writable, and `overwrite: true` lets us replace a file left over from a previous run.
 
@@ -182,14 +210,15 @@ $extractor = new CSV("progress_{$i}.csv", true);
 $extractor->export($estimator->progress(), overwrite: true);
 ```
 
-> **Note:** When training a network incrementally with `partial()` - rather than `train()` - the validation set is carved out of each incoming chunk with a stratified split rather than from the full dataset. The hyper-parameters controlling this are `evalInterval` (how often to evaluate - once per epoch in our case) and `window` (how many epochs without improvement before early-stopping).
+> **Note:** When training a network incrementally with `partial()` - rather than `train()` - the hyper-parameters controlling early-stopping are `evalInterval` (how often to evaluate - once per epoch in our case) and `window` (how many epochs without improvement before early-stopping). The validation set used to measure improvement is the one we fixed above with `setValidationDataset()`.
 
 The validation score should be getting better with each epoch as the loss decreases. You can generate your own plots by importing the `progress_1.csv`, `progress_2.csv`, etc. files into your plotting application. Because each file covers a different block of the dataset, plot them in order to follow the model across the whole training run.
 
-Finally, we save the model so we can load it later in our validation script.
+Finally, we save both the transformer and the model so we can load them later in our validation script.
 
 ```php
 if (strtolower(readline('Save this model? (y|[n]): ')) === 'y') {
+    $transformer->save();
     $estimator->save();
 }
 ```
@@ -212,17 +241,22 @@ We'll start by importing the testing samples from `datasets/test.csv`. The sampl
 use Rubix\ML\Datasets\Labeled;
 use Rubix\ML\Extractors\CSV;
 
-$dataset = Labeled::fromIterator(new CSV('datasets/test.csv'));
+$dataset = Labeled::fromIterator(new CSV('datasets/test.csv', true));
 ```
 
-Next, we'll use the Persistent Model wrapper to load the network we trained earlier. Calling `cleanup()` releases any resources held by the pipeline's transformers (such as cached statistics) now that the model has been loaded - it is purely an optimization and can be safely omitted.
+Next, we'll use the Persistent Transformer and Persistent Model wrappers to load the transformer and network we saved during training. The transformer must be applied to the testing samples before they are fed to the model - the model was trained on normalized inputs and will not behave correctly on raw data. Calling `cleanup()` releases any resources held by the loaded model - it is purely an optimization and can be safely omitted.
 
 ```php
 use Rubix\ML\PersistentModel;
+use Rubix\ML\Transformers\PersistentTransformer;
 use Rubix\ML\Persisters\Filesystem;
+
+$transformer = PersistentTransformer::load(new Filesystem('transformer.rbx'));
 
 $estimator = PersistentModel::load(new Filesystem('model.rbx'));
 $estimator->cleanup();
+
+$dataset->apply($transformer);
 ```
 
 Now we can use the estimator to make predictions on the testing set. The `predict()` method on the estimator takes a dataset as input and returns an array of predictions.
