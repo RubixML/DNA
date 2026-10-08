@@ -11,14 +11,12 @@
     "authors": [
         {
             "name": "Andrew DalPino",
-            "role": "Lead Engineer",
-            "email": "support@andrewdalpino.com"
+            "role": "Lead Engineer"
         }
     ],
     "require": {
-        "php": ">=7.4",
-        "rubix/ml": "^1.1",
-        "scienide/helix": "dev-master"
+        "php": ">=8.3",
+        "rubix/ml": "^3.0"
     },
     "config": {
         "preferred-install": "dist",
