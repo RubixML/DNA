@@ -5,7 +5,7 @@ An example project demonstrating the use of machine learning to identify microbe
 ## Requirements
 
 - [PHP](https://php.net) 8.3 or above.
-- [Tensor extension](https://github.com/RubixML/Tensor-Ext) for fast training and inference.
+- [Tensor 4.1+ extension](https://github.com/RubixML/Tensor-Ext) for fast training and inference.
 
 ## Installation
 
@@ -20,7 +20,7 @@ composer create-project rubix/dna
 Then install the [Tensor Ext](https://packagist.org/packages/rubix/tensor_ext) extension using [PIE](https://github.com/php/pie) like in the example below.
 
 ```sh
-pie install rubix/tensor_ext
+pie install rubix/tensor_ext:^4.1
 ```
 
 ## Tutorial
